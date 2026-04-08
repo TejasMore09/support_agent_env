@@ -6,8 +6,12 @@ authors = [{ name = "Tejas" }]
 dependencies = [
     "fastapi",
     "uvicorn",
-    "openai"
+    "openai",
+    "openenv>=0.2.0"
 ]
+
+[project.scripts]
+server = "server.app:main"
 
 [build-system]
 requires = ["setuptools", "wheel"]
