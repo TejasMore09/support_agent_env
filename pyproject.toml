@@ -1,0 +1,14 @@
+[project]
+name = "support-agent-env"
+version = "0.1.0"
+description = "Customer support agent OpenEnv environment"
+authors = [{ name = "Tejas" }]
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "openai"
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
