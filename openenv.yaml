@@ -1,0 +1,66 @@
+name: customer-support-agent-env
+version: "1.0.0"
+description: >
+  A real-world OpenEnv environment where an LLM agent handles customer support
+  emails through 3 progressively harder tasks: classification, response
+  generation, and full issue resolution. Deterministic graders, dense reward
+  signal, and reproducible scoring across all tasks.
+
+tags:
+  - openenv
+  - customer-support
+  - nlp
+  - text
+  - real-world
+
+tasks:
+  - id: classify
+    name: Email Classification
+    difficulty: easy
+    description: Classify the customer email into billing, complaint, or query.
+    score_range: [0.0, 1.0]
+
+  - id: respond
+    name: Professional Response Generation
+    difficulty: medium
+    description: >
+      Draft a professional customer support reply addressing the customer's
+      specific issue with empathy and concrete next steps.
+    score_range: [0.0, 1.0]
+
+  - id: resolve
+    name: Full Issue Resolution
+    difficulty: hard
+    description: >
+      Fully resolve the customer issue end-to-end: correctly classify,
+      respond professionally, and provide a concrete resolution path
+      satisfying all grader criteria.
+    score_range: [0.0, 1.0]
+
+observation_space:
+  type: dict
+  fields:
+    email_id: string
+    email_body: string
+    task: "enum[classify, respond, resolve]"
+    step_num: integer
+
+action_space:
+  type: dict
+  fields:
+    reply: string
+
+reward:
+  type: float
+  range: [0.0, 1.0]
+  dense: true
+  description: >
+    Deterministic, multi-criterion scoring. Partial credit at every step.
+    Never sparse. Reproducible across runs.
+
+infra:
+  runtime: python3.10
+  memory: 4gb
+  vcpu: 2
+  max_episode_steps: 3
+  inference_timeout_minutes: 20
