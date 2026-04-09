@@ -1,51 +1,34 @@
 """
 Inference Script — Customer Support Agent Environment
 ======================================================
-MANDATORY environment variables:
-  API_BASE_URL   The API endpoint for the LLM (e.g. https://router.huggingface.co/v1)
-  MODEL_NAME     Model identifier (e.g. Qwen/Qwen2.5-72B-Instruct)
-  API_KEY       Your HuggingFace API key
+MANDATORY environment variables (injected by validator):
+  API_BASE_URL   The API endpoint for the LLM proxy
+  API_KEY        The API key for the LLM proxy
+  MODEL_NAME     Model identifier
 
-STDOUT FORMAT (strictly followed):
+STDOUT FORMAT:
   [START] task=<task_name> env=<benchmark> model=<model_name>
   [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
   [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
-
-Rules:
-  - One [START] per episode.
-  - One [STEP] per env.step() call, immediately after it returns.
-  - One [END] after env.close(), always emitted (even on exception).
-  - reward and score formatted to 2 decimal places.
-  - done and success lowercase booleans.
-  - error is the raw exception string or null.
-  - All fields on a single line, no newlines within a line.
-  - Each task returns score in [0, 1].
 """
 
 import asyncio
 import os
 import sys
 
-# ── Fix sys.path FIRST so my_env can be found regardless of working directory ──
-# The validator may run this script from /tmp/workspace/ or any other cwd.
-# We ensure the directory containing inference.py is always on the path.
+# ── Fix sys.path so my_env is importable regardless of working directory ───────
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
-# ── Constants ──────────────────────────────────────────────────────────────────
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
-# Validator injects API_KEY; fall back to HF_TOKEN for local runs
-API_KEY      = os.getenv("API_KEY") or os.getenv("HF_TOKEN", "dummy-token")
-
+# ── Task identity (no env vars needed — safe at module level) ──────────────────
 TASK_NAME = "customer-support"
 ENV_NAME  = "customer_support_agent_env"
 
-# ── Logging — defined before ANYTHING else so they can never fail ──────────────
+# ── Logging functions — defined first, called first ────────────────────────────
 
-def log_start() -> None:
-    print(f"[START] task={TASK_NAME} env={ENV_NAME} model={MODEL_NAME}", flush=True)
+def log_start(model: str) -> None:
+    print(f"[START] task={TASK_NAME} env={ENV_NAME} model={model}", flush=True)
 
 
 def log_step(step: int, action: str, reward: float, done: bool, error=None) -> None:
@@ -66,11 +49,15 @@ def log_end(success: bool, steps: int, score: float, rewards: list) -> None:
         flush=True,
     )
 
-# ── Emit [START] immediately — before any import that could fail ───────────────
-# This guarantees the validator sees at least one structured line.
-log_start()
+# ── Read env vars (validator always injects these) ─────────────────────────────
+API_BASE_URL = os.environ["API_BASE_URL"]
+API_KEY      = os.environ["API_KEY"]
+MODEL_NAME   = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
-# ── Now import potentially-failing dependencies ────────────────────────────────
+# ── Emit [START] immediately after env vars are read ──────────────────────────
+log_start(MODEL_NAME)
+
+# ── Import dependencies ────────────────────────────────────────────────────────
 try:
     from openai import OpenAI
     _openai_ok = True
@@ -172,7 +159,6 @@ async def run_episode(env, client) -> tuple:
 
 
 async def main() -> None:
-    # If imports failed, emit dummy steps so output parsing still sees structure
     if not _env_ok or not _openai_ok:
         log_step(1, "", 0.0, True, error="import-failed")
         log_step(2, "", 0.0, True, error="import-failed")
@@ -180,7 +166,8 @@ async def main() -> None:
         log_end(False, 3, 0.0, [0.0, 0.0, 0.0])
         return
 
-    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    # Exactly as validator requires: base_url and api_key from env vars
+    client = OpenAI(base_url=os.environ["API_BASE_URL"], api_key=os.environ["API_KEY"])
     env    = CustomerSupportEnv()
 
     success, steps, score, rewards = await run_episode(env, client)
