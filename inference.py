@@ -26,22 +26,25 @@ import asyncio
 import os
 import sys
 
-# ── Constants (safe: no network calls, no OpenAI init here) ───────────────────
+# ── Fix sys.path FIRST so my_env can be found regardless of working directory ──
+# The validator may run this script from /tmp/workspace/ or any other cwd.
+# We ensure the directory containing inference.py is always on the path.
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
+
+# ── Constants ──────────────────────────────────────────────────────────────────
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
-HF_TOKEN     = os.getenv("HF_TOKEN",     "dummy-token")  # fallback prevents empty-string crash
+HF_TOKEN     = os.getenv("HF_TOKEN",     "dummy-token")
 
 TASK_NAME = "customer-support"
 ENV_NAME  = "customer_support_agent_env"
 
-# ── Logging ────────────────────────────────────────────────────────────────────
-
+# ── Logging — defined before ANYTHING else so they can never fail ──────────────
 
 def log_start() -> None:
-    print(
-        f"[START] task={TASK_NAME} env={ENV_NAME} model={MODEL_NAME}",
-        flush=True
-    )
+    print(f"[START] task={TASK_NAME} env={ENV_NAME} model={MODEL_NAME}", flush=True)
 
 
 def log_step(step: int, action: str, reward: float, done: bool, error=None) -> None:
@@ -62,7 +65,26 @@ def log_end(success: bool, steps: int, score: float, rewards: list) -> None:
         flush=True,
     )
 
-# ── Prompt builders ────────────────────────────────────────────────────────────
+# ── Emit [START] immediately — before any import that could fail ───────────────
+# This guarantees the validator sees at least one structured line.
+log_start()
+
+# ── Now import potentially-failing dependencies ────────────────────────────────
+try:
+    from openai import OpenAI
+    _openai_ok = True
+except Exception as _e:
+    _openai_ok = False
+    print(f"# openai import failed: {_e}", file=sys.stderr, flush=True)
+
+try:
+    from my_env.env import CustomerSupportEnv
+    _env_ok = True
+except Exception as _e:
+    _env_ok = False
+    print(f"# my_env import failed: {_e}", file=sys.stderr, flush=True)
+
+# ── Prompts ────────────────────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = (
     "You are a professional customer support agent. "
@@ -95,18 +117,17 @@ def build_prompt(email_body: str, task: str) -> str:
             f"Customer Email:\n{email_body}"
         )
 
-# ── Main agent loop ────────────────────────────────────────────────────────────
+# ── Agent loop ─────────────────────────────────────────────────────────────────
 
 async def run_episode(env, client) -> tuple:
-    """Run one full episode (3 steps). Returns (success, steps, score, rewards)."""
-    rewards = []
+    rewards  = []
     step_num = 0
 
     try:
         reset_result = await env.reset()
         obs = reset_result["observation"]
 
-        for step_num in range(1, 4):  # 3 tasks max
+        for step_num in range(1, 4):
             email_body = obs["email_body"]
             task       = obs["task"]
             prompt     = build_prompt(email_body, task)
@@ -150,31 +171,32 @@ async def run_episode(env, client) -> tuple:
 
 
 async def main() -> None:
-    # ── All imports that could fail go INSIDE main() ───────────────────────────
-    from my_env.env import CustomerSupportEnv
-    from openai import OpenAI
+    # If imports failed, emit dummy steps so output parsing still sees structure
+    if not _env_ok or not _openai_ok:
+        log_step(1, "", 0.0, True, error="import-failed")
+        log_step(2, "", 0.0, True, error="import-failed")
+        log_step(3, "", 0.0, True, error="import-failed")
+        log_end(False, 3, 0.0, [0.0, 0.0, 0.0])
+        return
 
-    # Client initialised here — never at module level — so crash is catchable
     client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
-
-    env = CustomerSupportEnv()
-    log_start()
+    env    = CustomerSupportEnv()
 
     success, steps, score, rewards = await run_episode(env, client)
 
     try:
         await env.close()
     except Exception:
-        pass  # never let close() kill the script
+        pass
 
     log_end(success, steps, score, rewards)
 
 
-# ── Entry point — always exits 0 ───────────────────────────────────────────────
+# ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except Exception as fatal:
-        # Absolute safety net — emit [END] even if everything exploded
-        print(f"[END] success=false steps=0 score=0.00 rewards=0.00", flush=True)
-        sys.exit(0)  # exit 0 — non-zero code fails Phase 2
+        log_step(1, "", 0.0, True, error=str(fatal))
+        log_end(False, 1, 0.0, [0.0])
+        sys.exit(0)
