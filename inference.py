@@ -4,7 +4,7 @@ Inference Script — Customer Support Agent Environment
 MANDATORY environment variables:
   API_BASE_URL   The API endpoint for the LLM (e.g. https://router.huggingface.co/v1)
   MODEL_NAME     Model identifier (e.g. Qwen/Qwen2.5-72B-Instruct)
-  HF_TOKEN       Your HuggingFace API key
+  API_KEY       Your HuggingFace API key
 
 STDOUT FORMAT (strictly followed):
   [START] task=<task_name> env=<benchmark> model=<model_name>
@@ -36,7 +36,8 @@ if _SCRIPT_DIR not in sys.path:
 # ── Constants ──────────────────────────────────────────────────────────────────
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME   = os.getenv("MODEL_NAME",   "Qwen/Qwen2.5-72B-Instruct")
-HF_TOKEN     = os.getenv("HF_TOKEN",     "dummy-token")
+# Validator injects API_KEY; fall back to HF_TOKEN for local runs
+API_KEY      = os.getenv("API_KEY") or os.getenv("HF_TOKEN", "dummy-token")
 
 TASK_NAME = "customer-support"
 ENV_NAME  = "customer_support_agent_env"
@@ -179,7 +180,7 @@ async def main() -> None:
         log_end(False, 3, 0.0, [0.0, 0.0, 0.0])
         return
 
-    client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
     env    = CustomerSupportEnv()
 
     success, steps, score, rewards = await run_episode(env, client)
