@@ -1,16 +1,15 @@
+import asyncio
 import os
 import sys
-import asyncio
 
-# sys.path fix
 _DIR = os.path.dirname(os.path.abspath(__file__))
 if _DIR not in sys.path:
     sys.path.insert(0, _DIR)
 
-# Read EXACTLY as validator injects - no fallbacks
-API_BASE_URL = os.environ["API_BASE_URL"]
-API_KEY      = os.environ["API_KEY"]
-MODEL_NAME   = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
+# EXACTLY matching their sample script pattern
+API_KEY      = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+MODEL_NAME   = os.getenv("MODEL_NAME")   or "Qwen/Qwen2.5-72B-Instruct"
 
 TASK_NAME = "customer-support"
 ENV_NAME  = "customer_support_agent_env"
@@ -19,7 +18,7 @@ def log_start(model):
     print(f"[START] task={TASK_NAME} env={ENV_NAME} model={model}", flush=True)
 
 def log_step(step, action, reward, done, error=None):
-    a = str(action).replace("\n"," ").replace("\r","")[:200]
+    a = str(action).replace("\n", " ").replace("\r", "")[:200]
     e = str(error) if error else "null"
     print(f"[STEP] step={step} action={a!r} reward={reward:.2f} done={str(done).lower()} error={e}", flush=True)
 
@@ -43,11 +42,8 @@ async def main():
     from openai import OpenAI
     from my_env.env import CustomerSupportEnv
 
-    # Exactly as validator specifies
-    client = OpenAI(
-        base_url=os.environ["API_BASE_URL"],
-        api_key=os.environ["API_KEY"],
-    )
+    # Match their sample: base_url and api_key from the variables above
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
     env = CustomerSupportEnv()
     rewards = []
@@ -64,7 +60,7 @@ async def main():
 
             try:
                 resp = client.chat.completions.create(
-                    model=os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct"),
+                    model=MODEL_NAME,
                     messages=[
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": prompt},
@@ -89,7 +85,7 @@ async def main():
 
     except Exception as e:
         if not rewards:
-            log_step(max(step_num,1), "", 0.0, True, error=str(e))
+            log_step(max(step_num, 1), "", 0.0, True, error=str(e))
             rewards = [0.0]
 
     try:
@@ -97,8 +93,8 @@ async def main():
     except:
         pass
 
-    score = round(sum(rewards)/len(rewards), 4) if rewards else 0.0
-    log_end(score >= 0.6, max(step_num,1), score, rewards)
+    score = round(sum(rewards) / len(rewards), 4) if rewards else 0.0
+    log_end(score >= 0.6, max(step_num, 1), score, rewards)
 
 if __name__ == "__main__":
     try:
