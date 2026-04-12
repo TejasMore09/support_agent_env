@@ -2,34 +2,36 @@
 Inference Script — Customer Support Agent Environment
 ======================================================
 MANDATORY environment variables (injected by validator):
-  API_BASE_URL   The API endpoint for the LLM proxy
-  API_KEY        The API key for the LLM proxy
-  MODEL_NAME     Model identifier
+  API_BASE_URL   The LiteLLM proxy endpoint
+  API_KEY        The proxy API key
+  MODEL_NAME     Model identifier (optional)
 
-STDOUT FORMAT:
-  [START] task=<task_name> env=<benchmark> model=<model_name>
-  [STEP]  step=<n> action=<action_str> reward=<0.00> done=<true|false> error=<msg|null>
-  [END]   success=<true|false> steps=<n> score=<score> rewards=<r1,r2,...,rn>
+This script:
+1. Uses the OpenAI client with API_BASE_URL and API_KEY exactly as injected
+2. Talks to the environment via HTTP (localhost:7860) for reset/step
+3. Emits [START]/[STEP]/[END] to stdout
 """
 
 import asyncio
 import os
 import sys
+import json
+import urllib.request
+import urllib.error
 
-# ── Fix sys.path so my_env is importable regardless of working directory ───────
+# ── sys.path fix ───────────────────────────────────────────────────────────────
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
-# ── Task identity (no env vars needed — safe at module level) ──────────────────
+# ── Task identity ──────────────────────────────────────────────────────────────
 TASK_NAME = "customer-support"
 ENV_NAME  = "customer_support_agent_env"
 
-# ── Logging functions — defined first, called first ────────────────────────────
+# ── Logging ────────────────────────────────────────────────────────────────────
 
 def log_start(model: str) -> None:
     print(f"[START] task={TASK_NAME} env={ENV_NAME} model={model}", flush=True)
-
 
 def log_step(step: int, action: str, reward: float, done: bool, error=None) -> None:
     action_safe = str(action).replace("\n", " ").replace("\r", " ")[:200]
@@ -40,7 +42,6 @@ def log_step(step: int, action: str, reward: float, done: bool, error=None) -> N
         flush=True,
     )
 
-
 def log_end(success: bool, steps: int, score: float, rewards: list) -> None:
     r_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
@@ -49,37 +50,34 @@ def log_end(success: bool, steps: int, score: float, rewards: list) -> None:
         flush=True,
     )
 
-# ── Read env vars (validator always injects these) ─────────────────────────────
+# ── Read env vars exactly as validator injects them ────────────────────────────
 API_BASE_URL = os.environ["API_BASE_URL"]
 API_KEY      = os.environ["API_KEY"]
 MODEL_NAME   = os.environ.get("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 
-# ── Emit [START] immediately after env vars are read ──────────────────────────
+# ── Emit [START] right away ────────────────────────────────────────────────────
 log_start(MODEL_NAME)
 
-# ── Import dependencies ────────────────────────────────────────────────────────
-try:
-    from openai import OpenAI
-    _openai_ok = True
-except Exception as _e:
-    _openai_ok = False
-    print(f"# openai import failed: {_e}", file=sys.stderr, flush=True)
+# ── HTTP helpers to talk to the env server (localhost:7860) ───────────────────
+ENV_SERVER = os.environ.get("ENV_SERVER_URL", "http://localhost:7860")
 
-try:
-    from my_env.env import CustomerSupportEnv
-    _env_ok = True
-except Exception as _e:
-    _env_ok = False
-    print(f"# my_env import failed: {_e}", file=sys.stderr, flush=True)
+def http_post(path: str, body: dict = None) -> dict:
+    url  = f"{ENV_SERVER}{path}"
+    data = json.dumps(body or {}).encode()
+    req  = urllib.request.Request(
+        url, data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read())
 
 # ── Prompts ────────────────────────────────────────────────────────────────────
-
 SYSTEM_PROMPT = (
     "You are a professional customer support agent. "
     "You respond clearly, empathetically, and with concrete next steps. "
     "Always maintain a professional tone."
 )
-
 
 def build_prompt(email_body: str, task: str) -> str:
     if task == "classify":
@@ -92,27 +90,34 @@ def build_prompt(email_body: str, task: str) -> str:
     elif task == "respond":
         return (
             "Write a professional customer support reply to the following email. "
-            "Include: a greeting, acknowledgement of their issue, an apology if appropriate, "
+            "Include: a greeting, acknowledgement of the issue, an apology, "
             "a concrete next action, and a professional closing.\n\n"
             f"Customer Email:\n{email_body}"
         )
-    else:  # resolve
+    else:
         return (
-            "You are resolving a customer support ticket end-to-end. "
-            "First, state the category (billing/complaint/query). "
-            "Then write a complete professional reply that fully resolves the issue — "
-            "include apology, concrete resolution steps, timeline, and professional closing.\n\n"
+            "Resolve this customer support ticket end-to-end. "
+            "State the category (billing/complaint/query), then write a complete "
+            "professional reply with apology, resolution steps, timeline, and closing.\n\n"
             f"Customer Email:\n{email_body}"
         )
 
-# ── Agent loop ─────────────────────────────────────────────────────────────────
+# ── Main ───────────────────────────────────────────────────────────────────────
+def main() -> None:
+    from openai import OpenAI
 
-async def run_episode(env, client) -> tuple:
+    # Exactly as validator requires
+    client = OpenAI(
+        base_url=os.environ["API_BASE_URL"],
+        api_key=os.environ["API_KEY"],
+    )
+
     rewards  = []
     step_num = 0
 
     try:
-        reset_result = await env.reset()
+        # Call env server to reset
+        reset_result = http_post("/reset")
         obs = reset_result["observation"]
 
         for step_num in range(1, 4):
@@ -136,7 +141,8 @@ async def run_episode(env, client) -> tuple:
             except Exception as api_err:
                 error_str = str(api_err)
 
-            step_result = await env.step({"reply": reply})
+            # Call env server to step
+            step_result = http_post("/step", {"reply": reply})
             reward = float(step_result["reward"])
             done   = bool(step_result["done"])
             rewards.append(reward)
@@ -155,35 +161,12 @@ async def run_episode(env, client) -> tuple:
 
     score   = round(sum(rewards) / len(rewards), 4) if rewards else 0.0
     success = score >= 0.6
-    return success, max(step_num, 1), score, rewards
+    log_end(success, max(step_num, 1), score, rewards)
 
 
-async def main() -> None:
-    if not _env_ok or not _openai_ok:
-        log_step(1, "", 0.0, True, error="import-failed")
-        log_step(2, "", 0.0, True, error="import-failed")
-        log_step(3, "", 0.0, True, error="import-failed")
-        log_end(False, 3, 0.0, [0.0, 0.0, 0.0])
-        return
-
-    # Exactly as validator requires: base_url and api_key from env vars
-    client = OpenAI(base_url=os.environ["API_BASE_URL"], api_key=os.environ["API_KEY"])
-    env    = CustomerSupportEnv()
-
-    success, steps, score, rewards = await run_episode(env, client)
-
-    try:
-        await env.close()
-    except Exception:
-        pass
-
-    log_end(success, steps, score, rewards)
-
-
-# ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except Exception as fatal:
         log_step(1, "", 0.0, True, error=str(fatal))
         log_end(False, 1, 0.0, [0.0])
